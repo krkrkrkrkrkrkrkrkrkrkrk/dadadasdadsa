@@ -1,0 +1,289 @@
+ֺ9-- ShadowAuth Loader v7.0 | Minimal Bootstrap
+-- NO SCRIPT EMBEDDED - 100% Server-Side Validation
+
+local _S="c7ab9d4c-44a7-4208-a900-705eeb5997d2"
+local _U="https://vsrxrppmdiozfyjwwmtg.supabase.co"
+local _A="sb_publishable_lv_x3V_UidhckwYkkgaC5Q_H0F7oOhI"
+local _N="teste"
+local _H="172f1a6007b44aed"
+
+-- Cache critical functions immediately
+local _pcall = pcall
+local _type = type
+local _tostring = tostring
+local _strLen = string.len
+local _strByte = string.byte
+local _strChar = string.char
+local _strGsub = string.gsub
+local _strFind = string.find
+local _strSub = string.sub
+local _tblInsert = table.insert
+local _tblConcat = table.concat
+local _bitBxor = bit32.bxor
+local _rawget = rawget
+local _ipairs = ipairs
+local _wait = wait or task.wait
+local _print = print
+local _warn = warn
+
+-- Services
+local H = game:GetService("HttpService")
+local P = game:GetService("Players").LocalPlayer
+
+local function log(msg)
+  local ts = os.date("%H:%M:%S")
+  _print("[" .. ts .. "] " .. _tostring(msg))
+end
+
+local function logSuccess(msg)
+  local ts = os.date("%H:%M:%S")
+  _print("[" .. ts .. "] ✓ " .. _tostring(msg))
+end
+
+local function logError(msg)
+  local ts = os.date("%H:%M:%S")
+  _warn("[" .. ts .. "] ✕ " .. _tostring(msg))
+end
+
+-- Quick integrity check
+local function quickCheck()
+  local testCode = "return 1337"
+  local ok1, fn1 = _pcall(loadstring, testCode)
+  if not ok1 or not fn1 then return false end
+  local ok2, result = _pcall(fn1)
+  return ok2 and result == 1337
+end
+
+if not quickCheck() then
+  logError("integrity violation")
+  return
+end
+
+log("hash: " .. _H .. "...")
+_wait(0.1)
+
+-- Get HWID
+local function getHWID()
+  local hwid
+  local methods = {
+    function() return gethwid and gethwid() end,
+    function() return get_hwid and get_hwid() end,
+    function() return getexecutorhwid and getexecutorhwid() end,
+    function() return game:GetService("RbxAnalyticsService"):GetClientId() end
+  }
+  
+  for _, method in _ipairs(methods) do
+    local ok, result = _pcall(method)
+    if ok and result and _strLen(_tostring(result)) > 10 then
+      hwid = result
+      break
+    end
+  end
+  
+  if not hwid then
+    local fp = "FP_" .. game.PlaceId .. "_" .. P.UserId
+    if identifyexecutor then
+      local ok, exec = _pcall(identifyexecutor)
+      if ok and exec then
+        fp = fp .. "_" .. _strGsub(_tostring(exec), "%s+", "")
+      end
+    end
+    hwid = fp
+  end
+  
+  return hwid
+end
+
+-- Secure POST
+local function securePost(url, data)
+  local requestFn = request or http_request or (syn and syn.request) or (http and http.request)
+  if not requestFn then return nil end
+  
+  local ok, res = _pcall(function()
+    return requestFn({
+      Url = url,
+      Method = "POST",
+      Headers = {
+        ["Content-Type"] = "application/json",
+        ["apikey"] = _A,
+        ["authorization"] = "Bearer " .. _A,
+        ["x-shadow-sig"] = "ShadowAuth-Loader-v7"
+      },
+      Body = data
+    })
+  end)
+  
+  if ok and res then return res.Body end
+  return nil
+end
+
+log("validating...")
+_wait(0.1)
+
+-- Get key - REQUIRED
+local key = script_key or (getgenv and getgenv().script_key)
+if not key or _strLen(_tostring(key)) < 5 then
+  logError("no key provided - set script_key before executing")
+  log("Example: script_key = 'YOUR-KEY-HERE'")
+  return
+end
+
+local hwid = getHWID()
+local executor = "Unknown"
+_pcall(function() 
+  if identifyexecutor then 
+    executor = identifyexecutor() 
+  end 
+end)
+
+local _SK = H:GenerateGUID(false):gsub("-", ""):sub(1, 16)
+local _TS = os.time()
+
+-- Send validation request to server
+-- Server will ONLY return script if key is valid
+local requestBody = H:JSONEncode({
+  key = key,
+  script_id = _S,
+  hwid = hwid,
+  roblox_username = P.Name,
+  roblox_user_id = _tostring(P.UserId),
+  executor = executor,
+  session_key = _SK,
+  timestamp = _TS,
+  place_id = game.PlaceId,
+  job_id = game.JobId,
+  loader_version = "7.0"
+})
+
+local response = securePost(_U .. "/functions/v1/validate-key-v2", requestBody)
+if not response then
+  logError("connection failed")
+  return
+end
+
+local data
+_pcall(function() data = H:JSONDecode(response) end)
+if not data then
+  logError("invalid response")
+  return
+end
+
+if data.banned then
+  logError("access revoked")
+  return
+end
+
+if not data.valid then
+  logError(data.message or "invalid key")
+  return
+end
+
+-- Server validated the key! Now we have the encrypted script
+if not data.script or _strLen(data.script) < 10 then
+  logError("no script received")
+  return
+end
+
+log("wrapper found")
+_wait(0.1)
+log("compiling...")
+_wait(0.15)
+
+-- Decrypt the script (key derivation + XOR)
+local function deriveKey(serverSalt, hwidStr, sessionKey)
+  local combined = serverSalt .. hwidStr .. sessionKey .. _tostring(_TS)
+  local hash = 0
+  
+  for i = 1, _strLen(combined) do
+    hash = _bitBxor(hash * 31, _strByte(combined, i))
+    hash = hash % 2147483647
+  end
+  
+  local derivedKey = ""
+  local seed = hash
+  for i = 1, 32 do
+    seed = _bitBxor(seed * 1103515245 + 12345, seed)
+    derivedKey = derivedKey .. _strChar((seed % 95) + 32)
+  end
+  
+  return derivedKey
+end
+
+local function xorDecrypt(encoded, derivedKey)
+  local result = {}
+  local base64 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/'
+  encoded = _strGsub(encoded, '[^' .. base64 .. '=]', '')
+  
+  local decoded = _strGsub(_strGsub(encoded, '.', function(x)
+    if x == '=' then return '' end
+    local r, f = '', _strFind(base64, x) - 1
+    for i = 6, 1, -1 do 
+      r = r .. (f % 2^i - f % 2^(i-1) > 0 and '1' or '0') 
+    end
+    return r
+  end), '%d%d%d?%d?%d?%d?%d?%d?', function(x)
+    if _strLen(x) ~= 8 then return '' end
+    local c = 0
+    for i = 1, 8 do 
+      c = c + (_strSub(x, i, i) == '1' and 2^(8-i) or 0) 
+    end
+    return _strChar(c)
+  end)
+  
+  for i = 1, _strLen(decoded) do
+    local keyByte = _strByte(derivedKey, ((i - 1) % _strLen(derivedKey)) + 1)
+    local posByte = ((i - 1) * 7 + 13) % 256
+    _tblInsert(result, _strChar(_bitBxor(_bitBxor(_strByte(decoded, i), keyByte), posByte)))
+  end
+  
+  return _tblConcat(result)
+end
+
+local derivedKey = deriveKey(data.salt or "", hwid, _SK)
+local code = xorDecrypt(data.script, derivedKey)
+
+-- Clear sensitive data
+data.script = nil
+data.salt = nil
+derivedKey = nil
+
+if not code or _strLen(code) < 10 then
+  logError("decryption failed")
+  return
+end
+
+-- Execute the script
+_G.__SHADOWAUTH_AUTHORIZED = true
+_G.__SHADOWAUTH_SESSION = _SK
+_G.__SHADOWAUTH_HWID = hwid
+_G.__SHADOWAUTH_VERSION = "7.0"
+
+if getgenv then
+  getgenv().LPremium = true
+  getgenv().LScript = data.script_name
+  getgenv().LSession = _SK
+end
+
+local fn, err = loadstring(code)
+code = nil
+
+if fn then
+  local success, runErr = _pcall(fn)
+  fn = nil
+  
+  if success then
+    logSuccess("script success")
+  else
+    -- Check if script yielded (async)
+    if _tostring(runErr):find("yield") then
+      logSuccess("script launched")
+    else
+      logError("script error: " .. _tostring(runErr):sub(1, 100))
+    end
+  end
+else
+  logError("compile error: " .. _tostring(err):sub(1, 100))
+end
+
+log("done")	hqn1r	(
+8I5Yviy!9%z)-1=5~9=hq٧iwֺ9˛> ߺw-x|3Yz۫ݖl~)|3Y+~?ψvί]hGvψvΧv.m]u]urب)g<azz޶zweƥsG-|v)gVwo>zwkz۫kxzwel塧٧
